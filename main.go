@@ -158,6 +158,7 @@ func operateFileSystem(FileSystem *FURGFileSystem) {
 		fmt.Println("4. Listar todos os arquivos armazenados no FURGfs2")
 		fmt.Println("5. Listar o espaço livre em relação ao total do FURGfs2")
 		fmt.Println("6. Proteger/desproteger arquivo contra escrita/remoção")
+		fmt.Println("7. Copiar um arquivo do sistema ficticio para o real")
 		fmt.Println("0. Sair")
 		fmt.Print("Escolha uma opção: ")
 		fmt.Scanln(&option)
@@ -182,43 +183,71 @@ func operateFileSystem(FileSystem *FURGFileSystem) {
 			copyFileToFileSystem(FileSystem, path, isProtected)
 		case 2:
 			fmt.Println("Opção 2: Remover arquivo do sistema de arquivos.")
-			fmt.Print("Digite o caminho completo do arquivo para remover: ")
-			var path string
-			fmt.Scanln(&path)
-			fmt.Printf("Arquivo '%s' será removido.\n", path)
+			fmt.Print("Digite o nome completo do arquivo(com extensão) para remover: ")
+			var fileName string
+			fmt.Scanln(&fileName)
+			fmt.Printf("Arquivo '%s' será removido.\n", fileName)
+			err := removeFileFromFileSystem(FileSystem, fileName)
+			if err != nil {
+				fmt.Println(err)
+			}
 
 		case 3:
 			fmt.Println("Opção 3: Renomear arquivo armazenado no FURGfs2.")
-			fmt.Print("Digite o nome do arquivo a ser renomeado: ")
+			fmt.Print("Digite o o nome completo do arquivo(com extensão) a ser renomeado: ")
 			var oldName string
 			fmt.Scanln(&oldName)
 			fmt.Print("Digite o novo nome do arquivo: ")
 			var newName string
 			fmt.Scanln(&newName)
 			fmt.Printf("Arquivo '%s' será renomeado para '%s'.\n", oldName, newName)
-
+			err := renameFileFromFileSystem(FileSystem, oldName, newName)
+			if err != nil {
+				fmt.Println(err)
+			}
 		case 4:
 			fmt.Println("Opção 4: Listar todos os arquivos armazenados no FURGfs2.")
-			fmt.Println("Listagem de arquivos...")
-
+			fmt.Println("Listagem de arquivos:")
+			showAllFilesFromFileSystem(FileSystem)
 		case 5:
 			fmt.Println("Opção 5: Listar o espaço livre em relação ao total do FURGfs2.")
-			fmt.Println("Espaço livre e total: ...")
-
+			fmt.Println("Espaço livre e total:")
+			showFreeSpaceFromFileSystem(FileSystem)
 		case 6:
 			fmt.Println("Opção 6: Proteger/desproteger arquivo contra escrita/remoção.")
 			fmt.Print("Digite o nome do arquivo a ser protegido/desprotegido: ")
 			var fileName string
 			fmt.Scanln(&fileName)
-			fmt.Print("Deseja proteger (1) ou desproteger (0) o arquivo? ")
-			var action string
-			fmt.Scanln(&action)
-			if action != "1" && action != "0" {
-				fmt.Println("Ação inválida! Deve ser '1' para proteger ou '0' para desproteger.")
-				continue
+			err := changePermission(FileSystem, fileName)
+			if err != nil {
+				fmt.Println(err)
 			}
-			fmt.Printf("Arquivo '%s' será %s.\n", fileName, map[string]string{"1": "protegido", "0": "desprotegido"}[action])
+		case 7:
+			var fileName string
+			var path string
 
+			fmt.Print("Digite o nome do arquivo que deseja copiar para o sistema real: ")
+			fmt.Scanln(&fileName)
+
+			if fileName == "" {
+				fmt.Println("Erro: Nome do arquivo não pode estar vazio.")
+				break
+			}
+
+			fmt.Print("Digite o caminho completo onde deseja salvar o arquivo(lembra de colocar a extensao caso queira abrir o arquivo): ")
+			fmt.Scanln(&path)
+
+			if path == "" {
+				fmt.Println("Erro: Caminho de destino não pode estar vazio.")
+				break
+			}
+
+			err := copyFileFromFileSystem(FileSystem, fileName, path)
+			if err != nil {
+				fmt.Printf("Erro ao copiar o arquivo: %v\n", err)
+			} else {
+				fmt.Printf("Arquivo '%s' copiado com sucesso para '%s'.\n", fileName, path)
+			}
 		case 0:
 			fmt.Println("Saindo do sistema. Até logo!")
 			return
@@ -229,31 +258,37 @@ func operateFileSystem(FileSystem *FURGFileSystem) {
 	}
 }
 
-func checkFileNameAlreadExists(filename [32]byte, FileSystem *FURGFileSystem) int {
+func checkFileNameAlreadyExists(filename [32]byte, FileSystem *FURGFileSystem) int {
+	fileNameStr := string(filename[:])
+
 	for i, v := range FileSystem.RootDir {
-		if v.Name == filename {
+		existingFileName := string(v.Name[:])
+
+		if existingFileName == fileNameStr {
 			return i
 		}
 	}
-	return 0
+
+	// Retorna -1 se o arquivo não for encontrado
+	return -1
 }
 
 func processFileForFileSystem(FileSystem *FURGFileSystem, path string) (*os.File, [32]byte, string, uint32, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, [32]byte{}, "", 0, fmt.Errorf("erro ao abrir o arquivo: %w", err)
+		return nil, [32]byte{}, "", 0, fmt.Errorf("Erro ao abrir o arquivo: %w", err)
 	}
 
 	fileInfo, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, [32]byte{}, "", 0, fmt.Errorf("erro ao obter informações do arquivo: %w", err)
+		return nil, [32]byte{}, "", 0, fmt.Errorf("Erro ao obter informações do arquivo: %w", err)
 	}
 
 	fileSize := fileInfo.Size()
 	if fileSize > int64(FileSystem.Header.FreeSpace) {
 		f.Close()
-		return nil, [32]byte{}, "", 0, fmt.Errorf("erro: o arquivo é muito grande para o espaço disponível")
+		return nil, [32]byte{}, "", 0, fmt.Errorf("Erro: o arquivo é muito grande para o espaço disponível")
 	}
 
 	var fileSizeUint32 uint32 = uint32(fileSize)
@@ -262,7 +297,7 @@ func processFileForFileSystem(FileSystem *FURGFileSystem, path string) (*os.File
 
 	if len(fileName) > 32 {
 		f.Close()
-		return nil, [32]byte{}, "", 0, fmt.Errorf("erro: o nome do arquivo excede o limite de 32 bytes")
+		return nil, [32]byte{}, "", 0, fmt.Errorf("Erro: o nome do arquivo excede o limite de 32 bytes")
 	}
 
 	var fileNameArray [32]byte
@@ -279,7 +314,7 @@ func copyFileToFileSystem(FileSystem *FURGFileSystem, Path string, Protected boo
 		return false
 	}
 
-	if checkFileNameAlreadExists(fileNameArray, FileSystem) != 0 {
+	if checkFileNameAlreadyExists(fileNameArray, FileSystem) != -1 {
 		fmt.Printf("O arquivo com nome '%s' já foi armazenado no sistema de arquivos.", fileName)
 		return false
 	}
@@ -353,35 +388,166 @@ func copyFileToFileSystem(FileSystem *FURGFileSystem, Path string, Protected boo
 	}
 	FileSystem.Header.FreeSpace -= fileSizeUint32
 	fmt.Printf("Arquivo '%s' copiado com sucesso para o sistema de arquivos.\n", fileName)
+	defer f.Close()
 	return true
 }
 
-func removeFileFromFileSystem(FileSystem *FURGFileSystem, Path string) bool {
-	_, fileNameArray, fileName, _, err := processFileForFileSystem(FileSystem, Path)
+func removeFileFromFileSystem(FileSystem *FURGFileSystem, FileName string) error {
+	var fileNameArray [32]byte
+	copy(fileNameArray[:], FileName)
 
-	if err != nil {
-		fmt.Println(err)
-		return false
+	if isAllNullBytes(FileName) {
+		return fmt.Errorf("Erro: Não existem arquivos com nome vazio.\n")
 	}
 
-	rootDirIndex := checkFileNameAlreadExists(fileNameArray, FileSystem)
-	if rootDirIndex == 0 {
-		fmt.Printf("O arquivo com nome '%s' não foi armazenado no sistema de arquivos.\n", fileName)
-		return false
+	rootDirIndex := checkFileNameAlreadyExists(fileNameArray, FileSystem)
+	if rootDirIndex == -1 {
+		return fmt.Errorf("Erro: O arquivo com nome '%s' não foi armazenado no sistema de arquivos.\n", FileName)
 	}
 
-	file := FileSystem.RootDir[rootDirIndex]
+	f := FileSystem.RootDir[rootDirIndex]
 
-	nextBlockId := file.FirstBlockID
+	if f.Protected {
+		return fmt.Errorf("Erro: Arquivo protegido, troque sua proteção para poder remover.")
+	}
+
+	nextBlockId := f.FirstBlockID
 	for nextBlockId != 0 {
 		currentFileEntry := FileSystem.FAT[nextBlockId]
-		currentFileEntry.Used = false
 		nextBlockId = currentFileEntry.NextBlockID
+		FileSystem.FAT[nextBlockId] = FATEntry{}
 	}
+	FileSystem.Header.FreeSpace += FileSystem.RootDir[rootDirIndex].Size
 
 	FileSystem.RootDir[rootDirIndex] = FileEntry{}
 
-	fmt.Printf("O arquivo com nome '%s' foi removido no sistema de arquivos.\n", fileName)
-	return true
+	fmt.Printf("O arquivo com nome '%s' foi removido no sistema de arquivos.\n", FileName)
+	return nil
+}
 
+func renameFileFromFileSystem(FileSystem *FURGFileSystem, OldFileName string, NewFileName string) error {
+	var oldFileNameArray [32]byte
+	copy(oldFileNameArray[:], OldFileName)
+
+	rootDirIndex := checkFileNameAlreadyExists(oldFileNameArray, FileSystem)
+	if rootDirIndex == -1 {
+		return fmt.Errorf("Erro: O arquivo com nome '%s' não foi armazenado no sistema de arquivos.\n", OldFileName)
+	}
+
+	var newFileNameArray [32]byte
+	copy(newFileNameArray[:], NewFileName)
+	if FileSystem.RootDir[rootDirIndex].Protected {
+		return fmt.Errorf("Erro: Arquivo protegido, troque sua proteção para poder remover.")
+	}
+	FileSystem.RootDir[rootDirIndex].Name = newFileNameArray
+
+	fmt.Printf("Arquivo '%d' renomeado, antes era '%d", NewFileName, OldFileName)
+	return nil
+}
+
+func isAllNullBytes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func showAllFilesFromFileSystem(FileSystem *FURGFileSystem) {
+	for i, file := range FileSystem.RootDir {
+		fileName := string(file.Name[:])
+
+		if fileName != "" && !isAllNullBytes(fileName) {
+			fmt.Printf("%d. %s", i, fileName)
+			fmt.Printf("  -  %s\n", map[bool]string{true: "protegido", false: "desprotegido"}[file.Protected])
+		}
+	}
+}
+
+func showFreeSpaceFromFileSystem(FileSystem *FURGFileSystem) {
+	totalSize := (FileSystem.Header.TotalSize) / (1024 * 1024)
+	freeSpace := (FileSystem.Header.FreeSpace) / (1024 * 1024)
+
+	occupiedSpace := totalSize - freeSpace
+	percentOccupied := (float64(occupiedSpace) / float64(totalSize)) * 100
+
+	fmt.Printf("Espaço total: %d MB\n", totalSize)
+	fmt.Printf("Espaço livre: %d MB\n", freeSpace)
+	fmt.Printf("Espaço ocupado: %d MB (%.2f%%)\n", occupiedSpace, percentOccupied)
+}
+
+func changePermission(FileSystem *FURGFileSystem, FileName string) error {
+	var fileNameArray [32]byte
+	copy(fileNameArray[:], FileName)
+
+	if isAllNullBytes(FileName) {
+		return fmt.Errorf("Erro: Não existem arquivos com nome vazio.\n")
+	}
+
+	rootDirIndex := checkFileNameAlreadyExists(fileNameArray, FileSystem)
+	if rootDirIndex == -1 {
+		return fmt.Errorf("Erro: O arquivo com nome '%s' não foi armazenado no sistema de arquivos.\n", FileName)
+	}
+
+	f := &FileSystem.RootDir[rootDirIndex]
+	fmt.Printf("Mudando a proteção do arquivo, agora é: '%s'\n", map[bool]string{true: "protegido", false: "desprotegido"}[f.Protected])
+	f.Protected = !f.Protected
+
+	if f.Protected {
+		fmt.Printf("O arquivo '%s' agora está protegido.\n", FileName)
+	} else {
+		fmt.Printf("O arquivo '%s' agora está desprotegido.\n", FileName)
+	}
+
+	return nil
+}
+
+func copyFileFromFileSystem(FileSystem *FURGFileSystem, FileName string, Path string) error {
+	var fileNameArray [32]byte
+	copy(fileNameArray[:], FileName)
+
+	// Verificar se o nome do arquivo é vazio
+	if isAllNullBytes(FileName) {
+		return fmt.Errorf("Erro: Não existem arquivos com nome vazio.")
+	}
+
+	// Localizar o arquivo no diretório raiz
+	rootDirIndex := checkFileNameAlreadyExists(fileNameArray, FileSystem)
+	if rootDirIndex == -1 {
+		return fmt.Errorf("Erro: O arquivo com nome '%s' não foi encontrado no sistema de arquivos.\n", FileName)
+	}
+
+	fileEntry := FileSystem.RootDir[rootDirIndex]
+
+	destFile, err := os.Create(Path)
+	if err != nil {
+		return fmt.Errorf("Erro ao criar o arquivo no sistema real: %v", err)
+	}
+	defer destFile.Close()
+
+	currentBlockID := fileEntry.FirstBlockID
+	for currentBlockID != 0 {
+		offset := int64(FileSystem.Header.DataStart + (currentBlockID * FileSystem.Header.BlockSize))
+		_, err := FileSystem.FilePointer.Seek(offset, 0)
+		if err != nil {
+			return fmt.Errorf("Erro ao mover ponteiro para bloco %d: %v", currentBlockID, err)
+		}
+
+		buf := make([]byte, FileSystem.Header.BlockSize)
+		bytesRead, err := FileSystem.FilePointer.Read(buf)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("Erro ao ler bloco %d: %v", currentBlockID, err)
+		}
+
+		_, err = destFile.Write(buf[:bytesRead])
+		if err != nil {
+			return fmt.Errorf("Erro ao escrever dados no arquivo destino: %v", err)
+		}
+
+		currentBlockID = FileSystem.FAT[currentBlockID].NextBlockID
+	}
+
+	fmt.Printf("Arquivo '%s' copiado com sucesso para o caminho '%s'.\n", FileName, Path)
+	return nil
 }
